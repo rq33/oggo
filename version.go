@@ -1,4 +1,4 @@
-package gocoin
+package oggo
 
 import (
 	// This file use to be only to make "go get" working.

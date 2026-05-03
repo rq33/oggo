@@ -1,3 +1,3 @@
-module github.com/piotrnar/gocoin
+module github.com/rq33/oggo
 
 go 1.18
