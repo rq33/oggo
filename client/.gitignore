@@ -1,0 +1,4 @@
+client
+*.conf
+ssl_cert/*.crt
+ssl_cert/*.key

@@ -1,0 +1,169 @@
+package webui
+
+import (
+	"encoding/json"
+	"net/http"
+
+	"github.com/piotrnar/gocoin/client/common"
+	"github.com/piotrnar/gocoin/client/usif"
+	"github.com/piotrnar/gocoin/lib/btc"
+
+	"strconv"
+	"time"
+)
+
+func json_blocks(w http.ResponseWriter, r *http.Request) {
+	type one_block struct {
+		Hash         string
+		Miner        string
+		WasteCnt     uint
+		FeeSPB       float64
+		Difficulty   float64
+		Size         int
+		Weight       uint
+		TotalFees    uint64
+		Reward       uint64
+		Sigops       int
+		MissedCnt    int
+		OrdCnt       uint
+		TimePre      int
+		TxCnt        int
+		OrdWeight    uint
+		OrdSize      uint
+		TimeDl       int
+		TimeVer      int
+		TimeQue      int
+		Received     uint32
+		Height       uint32
+		FromConID    uint32
+		Timestamp    uint32
+		Version      uint32
+		HaveFeeStats bool
+	}
+
+	var blks []*one_block
+
+	common.Last.Mutex.Lock()
+	end := common.Last.Block
+	common.Last.Mutex.Unlock()
+
+	for cnt := uint32(0); end != nil && cnt < common.Get(&common.CFG.WebUI.ShowBlocks); cnt++ {
+		bl, _, e := common.BlockChain.Blocks.BlockGet(end.BlockHash)
+		if e != nil {
+			break
+		}
+		block, e := btc.NewBlockX(bl, end.BlockHash)
+		if e != nil {
+			break
+		}
+		common.BlockChain.BlockIndexAccess.Lock()
+		node := common.BlockChain.BlockIndex[end.BlockHash.BIdx()]
+		common.BlockChain.BlockIndexAccess.Unlock()
+
+		var cbasetx *btc.Tx
+
+		rb, cbasetx := usif.GetReceivedBlockX(block)
+
+		b := new(one_block)
+		b.Height = end.Height
+		b.Timestamp = block.BlockTime()
+		b.Hash = end.BlockHash.String()
+		b.TxCnt = block.TxCount
+		b.Size = len(bl)
+		b.Weight = block.BlockWeight
+		b.Version = block.Version()
+
+		b.OrdCnt = rb.OrbTxCnt
+		b.OrdSize = rb.OrbTxSize
+		b.OrdWeight = rb.OrbTxWeight
+
+		for o := range cbasetx.TxOut {
+			b.Reward += cbasetx.TxOut[o].Value
+		}
+
+		b.Miner, _ = common.TxMiner(cbasetx)
+		b.TotalFees = b.Reward - btc.GetBlockReward(end.Height)
+		if rb.PaidTxsWeight > 0 {
+			b.FeeSPB = float64(4*b.TotalFees) / float64(rb.PaidTxsWeight)
+		}
+
+		b.Difficulty = btc.GetDifficulty(block.Bits())
+
+		b.Received = uint32(rb.TmStart.Unix())
+		b.Sigops = int(node.SigopsCost)
+
+		if rb.TmPreproc.IsZero() {
+			b.TimePre = -1
+		} else {
+			b.TimePre = int(rb.TmPreproc.Sub(rb.TmStart) / time.Millisecond)
+		}
+
+		if rb.TmDownload.IsZero() {
+			b.TimeDl = -1
+		} else {
+			b.TimeDl = int(rb.TmDownload.Sub(rb.TmStart) / time.Millisecond)
+		}
+
+		if rb.TmQueue.IsZero() {
+			b.TimeQue = -1
+		} else {
+			b.TimeQue = int(rb.TmQueue.Sub(rb.TmStart) / time.Millisecond)
+		}
+
+		if rb.TmAccepted.IsZero() {
+			b.TimeVer = -1
+		} else {
+			b.TimeVer = int(rb.TmAccepted.Sub(rb.TmStart) / time.Millisecond)
+		}
+
+		b.WasteCnt = uint(rb.DownloadCnt)
+		b.MissedCnt = rb.TxMissing
+		b.FromConID = rb.FromConID
+
+		usif.BlockFeesMutex.Lock()
+		_, b.HaveFeeStats = usif.BlockFees[end.Height]
+		usif.BlockFeesMutex.Unlock()
+
+		blks = append(blks, b)
+		end = end.Parent
+	}
+
+	bx, er := json.Marshal(blks)
+	if er == nil {
+		w.Header()["Content-Type"] = []string{"application/json"}
+		w.Write(bx)
+	} else {
+		println(er.Error())
+	}
+
+}
+
+func json_blfees(w http.ResponseWriter, r *http.Request) {
+	if len(r.Form["height"]) == 0 {
+		w.Write([]byte("No hash given"))
+		return
+	}
+
+	height, e := strconv.ParseUint(r.Form["height"][0], 10, 32)
+	if e != nil {
+		w.Write([]byte(e.Error()))
+		return
+	}
+
+	usif.BlockFeesMutex.Lock()
+	fees, ok := usif.BlockFees[uint32(height)]
+	usif.BlockFeesMutex.Unlock()
+
+	if !ok {
+		w.Write([]byte("File not found"))
+		return
+	}
+
+	bx, er := json.Marshal(fees)
+	if er == nil {
+		w.Header()["Content-Type"] = []string{"application/json"}
+		w.Write(bx)
+	} else {
+		println(er.Error())
+	}
+}
